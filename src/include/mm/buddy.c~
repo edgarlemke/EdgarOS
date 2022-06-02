@@ -1,0 +1,548 @@
+#ifndef __INCLUDE_MM_BUDDY_C__
+#define __INCLUDE_MM_BUDDY_C__ 1
+
+
+#include "buddy.h"
+
+
+struct Buddy *Buddy_objs[BUDDY_OBJS_MAX_SZ];
+uint64_t Buddy_objs_sz = 0;
+
+struct _Pair
+{
+  uint64_t addr;
+  uint64_t sz;
+};
+
+#define _QUEUE_MAX_SZ 3
+struct _Queue
+{
+  struct _Pair pairs[_QUEUE_MAX_SZ];
+  uint8_t sz;
+};
+struct _Queue _queue;
+
+uint64_t ORDERVALUES[MAX_ORDER + 1];
+//uint64_t BITMAP_SZ[MAX_ORDER + 1];
+
+
+void
+Buddy_fill_ORDERVALUES (void)
+{
+  // supports MAX_ORDER up to 255 with uint8_t
+  for (uint8_t i = 0; i <= MAX_ORDER; i++)
+    {
+      ORDERVALUES[i] = PAGE_SZ * pow (2, i);
+      //print(itoa(ORDERVALUES[i],16)); print("\n");
+      //BITMAP_SZ[i] = pow (2, i);
+      //if (i > 0)
+      //BITMAP_SZ[i]++;
+    }
+
+}
+
+
+void
+_Queue_init (struct _Queue *self)
+{
+  self->sz = 0;
+}
+
+void
+_Queue_push (struct _Queue *self, struct _Pair pair)
+{
+  if (self->sz == _QUEUE_MAX_SZ)
+    {
+      print ("include/mm/buddy.c: _Queue_push(): self->sz == _QUEUE_MAX_SZ");
+      hang ();
+    }
+  self->pairs[self->sz++] = pair;
+}
+
+struct _Pair
+_Queue_pop (struct _Queue *self)
+{
+  struct _Pair popped_Pair = self->pairs[0];
+
+  for (struct _Pair * cur_Pair_ptr = self->pairs;
+       cur_Pair_ptr < self->pairs + self->sz - 1; cur_Pair_ptr++)
+    {
+      *cur_Pair_ptr = *(cur_Pair_ptr + 1);
+    }
+  *(self->pairs + self->sz) = (struct _Pair)
+  {.addr = 0,.sz = 0 };
+  self->sz--;
+
+  return popped_Pair;
+}
+
+
+uint64_t
+_Buddy_get_bitmap_sz (uint8_t order)
+{
+  uint64_t bitmap_sz = 0;
+
+  uint8_t childorder;
+
+  childorder = align_up (order, 3);
+  if (childorder == 0)
+    childorder += 3;
+  if (childorder >= 6)
+    childorder -= 3;
+
+//  print ("co: ");
+//  print (itoa (childorder, 16));
+//  print ("\n");
+
+  //uint8_t childbits = ORDERVALUES[order] / ORDERVALUES[childorder];
+  uint8_t childbits = _Buddy_get_childbits (order);
+  bitmap_sz = childbits;
+  if (order > 0)
+    bitmap_sz++;
+
+  uint8_t iter_order = childorder - 3;
+  uint64_t exp = 1;
+  while (iter_order)
+    {
+
+      uint64_t toadd = childbits * pow (8, exp);
+//        print("toadd: "); print(itoa(toadd,16)); print("\n");
+
+      bitmap_sz += toadd;
+
+      exp++;
+      iter_order -= 3;
+    }
+
+
+  return bitmap_sz;
+}
+
+
+void
+Buddy_get_map_sz (uint64_t * map_sz, uint64_t addr, uint64_t sz)
+{
+  //uint64_t map_sz = 0;
+
+  _Queue_init (&_queue);
+  _Queue_push (&_queue, (struct _Pair)
+	       {.addr = addr,.sz = sz });
+
+  while (_queue.sz > 0)
+    {
+      struct _Pair next_Pair = _Queue_pop (&_queue);
+
+      uint8_t order = _get_order (next_Pair.sz);
+      //print("o: "); print(itoa(order,16)); print("\n");
+
+      uint64_t body_algn_addr = align_up (next_Pair.addr, ORDERVALUES[order]);
+      uint64_t body_algn_sz = align_down (next_Pair.sz, ORDERVALUES[order]);
+
+      uint64_t head_addr = next_Pair.addr;
+      uint64_t head_sz = body_algn_addr - head_addr;
+      if (head_sz >= PAGE_SZ)
+	{
+	  _Queue_push (&_queue, (struct _Pair)
+		       {.addr = head_addr,.sz = head_sz });
+	}
+
+      uint64_t tail_addr = body_algn_addr + body_algn_sz;
+      uint64_t tail_sz = next_Pair.addr + next_Pair.sz - tail_addr;
+      if (tail_sz >= PAGE_SZ)
+	{
+	  _Queue_push (&_queue, (struct _Pair)
+		       {.addr = tail_addr,.sz = tail_sz });
+	}
+
+      uint64_t bitmap_sz = _Buddy_get_bitmap_sz (order);
+      uint64_t offset = sizeof (struct Buddy) - sizeof (uint8_t) + bitmap_sz;
+
+      //uint64_t offset = pow (2, order) * sizeof (struct Buddy);
+      //if (order > 0)          // add parent buddy
+      //        offset += sizeof (struct Buddy);
+
+      //print ("map off: ");
+      //print (itoa (offset, 16));
+      //print ("\n");
+
+      //print("map_sz: "); print(itoa(*map_sz,16));
+      *map_sz += offset;
+      //print(" 2map_sz: "); print(itoa(*map_sz,16));
+      //print("\n");
+
+
+    }
+
+}
+
+
+void
+Buddy_create_tree (uint64_t * map_ptr, uint64_t addr, uint64_t sz)
+{
+
+  //uint64_t *cur_map_ptr = map_ptr;
+
+  _Queue_init (&_queue);
+  _Queue_push (&_queue, (struct _Pair)
+	       {.addr = addr,.sz = sz });
+
+  while (_queue.sz > 0)
+    {
+      struct _Pair next_Pair = _Queue_pop (&_queue);
+
+      uint8_t order = _get_order (next_Pair.sz);
+      //print ("order: ");
+      //print (itoa (order, 16));
+      //print ("\n");
+
+      uint64_t body_algn_addr = align_up (next_Pair.addr, ORDERVALUES[order]);
+      uint64_t body_algn_sz = align_down (next_Pair.sz, ORDERVALUES[order]);
+
+      uint64_t head_addr = next_Pair.addr;
+      uint64_t head_sz = body_algn_addr - head_addr;
+      if (head_sz >= PAGE_SZ)
+	{
+	  _Queue_push (&_queue, (struct _Pair)
+		       {.addr = head_addr,.sz = head_sz });
+	}
+
+      uint64_t tail_addr = body_algn_addr + body_algn_sz;
+      uint64_t tail_sz = next_Pair.addr + next_Pair.sz - tail_addr;
+      if (tail_sz >= PAGE_SZ)
+	{
+	  _Queue_push (&_queue, (struct _Pair)
+		       {.addr = tail_addr,.sz = tail_sz });
+	}
+
+      Buddy_init ((struct Buddy *) *map_ptr, body_algn_addr, order);
+      _Buddy_push ((struct Buddy *) *map_ptr);
+
+      //uint64_t buddies = pow (2, order);
+      //if (order > 0)
+      //        buddies++;
+
+      //uint64_t offset = buddies * sizeof (struct Buddy);
+      uint64_t bitmap_sz = _Buddy_get_bitmap_sz (order);
+      uint64_t offset = sizeof (struct Buddy) - sizeof (uint8_t) + bitmap_sz;
+
+      (*map_ptr) += offset;
+
+    }
+
+  //print("Buddy_objs_sz: "); print(itoa(Buddy_objs_sz,16)); print("\n");
+
+}
+
+
+void
+Buddy_init (struct Buddy *self, uint64_t addr, uint8_t order)
+{
+//  print (" self: ");
+//  print (itoa ((uint64_t) self, 16));
+//  print (" o: ");
+//  print (itoa (order, 16));
+//  print ("\n");
+
+  *self = (struct Buddy)
+  {
+    .addr = addr,
+    .order = order,
+  };
+
+  // fill bitmap with zeros
+  uint8_t limit = _Buddy_get_bitmap_sz (order);
+  for (uint8_t i = 0; i < limit; i++)
+    {
+      self->bitmap[i] = 0;
+    }
+
+}
+
+
+void
+_Buddy_push (struct Buddy *self)
+{
+  if (Buddy_objs_sz == BUDDY_OBJS_MAX_SZ)
+    {
+      print
+	("include/mm/buddy.c: _Buddy_push(): Buddy_objs_sz == BUDDY_OBJS_MAX_SZ");
+      hang ();
+    }
+  Buddy_objs[Buddy_objs_sz++] = self;
+}
+
+
+struct Buddy *
+_get_map_buddy (uint64_t map_ptr)
+{
+
+  uint64_t limit = (uint64_t) Buddy_objs + Buddy_objs_sz;
+  //print ("limit: ");
+  //print (itoa (limit, 16));
+  //print ("\n");
+
+  for (struct Buddy ** buddy_ptr = Buddy_objs; (uint64_t) buddy_ptr < limit;
+       buddy_ptr++)
+    {
+      //print ("*buddy_ptr: ");
+      //print (itoa (*buddy_ptr, 16));
+      //print ("\n");
+      uint8_t st_or_eq = (*buddy_ptr)->addr <= VIRT2PHYS ((uint64_t) map_ptr);
+      uint8_t gt_or_eq =
+	(*buddy_ptr)->addr + ORDERVALUES[(*buddy_ptr)->order] >=
+	VIRT2PHYS ((uint64_t) map_ptr);
+
+      if (st_or_eq && gt_or_eq)
+	{
+	  //print ("contains\n");
+	  //print (itoa (*buddy_ptr, 16));
+	  //print ("\n");
+	  //print (itoa ((*buddy_ptr)->addr, 16));
+	  //print ("\n");
+	  return *buddy_ptr;
+
+	}
+
+    }
+
+}
+
+
+uint8_t
+_Buddy_get_childbits (uint8_t order)
+{
+  uint8_t x = 8 / pow (2, order % 3);
+  //print("x: "); print(itoa(x,16)); print("\n");
+
+  uint8_t childbits = 8 / x;
+
+  return childbits;
+}
+
+
+uint64_t
+_Buddy_get_order_offset (struct Buddy *buddy, uint8_t order)
+{
+  uint8_t offset_exp, childbits_order, childbits, iter_order;
+  uint64_t offset;
+
+
+  if (order > buddy->order)
+    {
+      print
+	("include/mm/buddy.c: _Buddy_get_order_offset(): order > buddy->order");
+      hang ();
+    }
+
+  if (order == buddy->order)
+    return 0;
+
+  childbits_order = align_up (buddy->order, 3) - 3;
+  if (order >= childbits_order)
+    return 1;
+
+  // since order isn't of parent buddy byte and isn't of childbit, start
+  // itering down orders smaller than childbits order
+  iter_order = childbits_order - 3;
+
+  // offset starts at least at parent buddy + childbits buddies
+  offset = 1 + _Buddy_get_childbits (buddy->order);
+
+  // offset exponential, since every order down we must skip the buddy
+  // bytes of past order
+  offset_exp = 0;
+
+  while (iter_order)
+    {
+//      print ("_ io: ");
+//      print (itoa (iter_order, 16));
+//      print ("\n");
+      if (order >= iter_order && offset_exp > 0)
+	{
+	  offset += pow (8, offset_exp);
+	}
+
+      offset_exp++;
+      iter_order -= 3;
+    }
+
+  return offset;
+}
+
+
+uint8_t
+_Buddy_get_byte_order (struct Buddy *buddy, uint8_t byte)
+{
+  uint8_t childbits, childbits_order, iter_order, offset_exp;
+  uint64_t order_offset, order_end;
+
+
+  if (byte == 0)
+    {
+      return buddy->order;
+    }
+
+  childbits = _Buddy_get_childbits (buddy->order);
+  childbits_order = align_up (buddy->order, 3) - 3;
+  if (byte > 0 && byte < 1 + childbits)
+    {
+      return childbits_order;
+    }
+
+  iter_order = childbits_order - 3;
+  offset_exp = 1;
+  while (1)
+    {
+      order_offset = _Buddy_get_order_offset (buddy, iter_order);
+      order_end = order_offset + (childbits * pow (8, offset_exp));
+
+      if (byte >= order_offset && byte < order_end)
+	return iter_order;
+
+      if (iter_order == 0)
+	break;
+
+      offset_exp++;
+      iter_order -= 3;
+    }
+
+  // iter_order == 0 below
+  //if (byte >= order_end)
+  //  {
+  //    print
+  //    ("include/mm/buddy.c: _Buddy_get_byte_order(): o == 0 && byte >= end");
+  //    hang ();
+  //  }
+  return iter_order;
+
+}
+
+
+uint64_t *
+_Buddy_get_byte_addr (struct Buddy *buddy, uint8_t byte)
+{
+  uint64_t *addr = (uint64_t *) buddy->addr;
+  uint64_t offset = 0;
+
+//  print ("addr: ");
+//  print (itoa (addr, 16));
+//  print ("\n");
+
+  if ( /*buddy->order == 0 || */ byte == 0)
+    return addr;
+
+  uint8_t childbits = _Buddy_get_childbits (buddy->order);
+  uint8_t childorder = _Buddy_get_byte_order (buddy, byte);
+
+  if (byte > 0 && byte < 1 + childbits)
+    {
+//      print ("co: ");
+//      print (itoa (childorder, 16));  //print("\n");
+//      print (" ov: ");
+//      print (itoa (ORDERVALUES[childorder], 16));
+//      print ("\n");
+      offset = (byte - 1) * ORDERVALUES[childorder];
+
+    }
+  else
+    {
+      offset =
+	(byte -
+	 _Buddy_get_order_offset (buddy,
+				  childorder)) * ORDERVALUES[childorder];
+    }
+
+//  print ("offset: ");
+//  print (itoa (offset, 16));
+//  print ("\n");
+
+  // the (uint64_t) type-cast assegurates the offset is corrected
+  return (uint64_t *) ((uint64_t) addr + offset);
+}
+
+
+void
+Buddy_reserve_tree (uint64_t * map_ptr, uint64_t map_sz)
+{
+  print ("Buddy_reserve_tree\n");
+
+  struct Buddy *map_buddy = _get_map_buddy (map_ptr);
+  print ("mb: ");
+  print (itoa ((uint64_t) map_buddy, 16));
+//  print (" cb: ");
+//  print (itoa ((uint64_t) _Buddy_get_childbits (map_buddy), 16));
+  print ("\n");
+
+  //uint64_t order_offset = _Buddy_get_order_offset (map_buddy, 0);
+  //print ("order_offset: ");
+  //print (itoa (order_offset, 16));
+  //print ("\n");
+
+  //uint64_t byte_order = _Buddy_get_byte_order (map_buddy, 0x13);
+  //print ("bo: ");
+  //print (itoa ((uint64_t) byte_order, 16));
+  //print ("\n");
+
+  //uint64_t byte_addr = _Buddy_get_byte_addr (map_buddy, 6);
+  //print("ba: "); print(itoa(byte_addr,16)); print("\n");
+
+  uint64_t bitmap_sz = _Buddy_get_bitmap_sz (map_buddy->order);
+  print ("bitmap_sz: ");
+  print (itoa (bitmap_sz, 16));
+  print ("\n");
+  for (uint64_t byte = 0; byte < bitmap_sz; byte++)
+    {
+//      print ("byte: ");
+//      print (itoa (byte, 16));
+//      print ("\n");
+
+      uint64_t byte_addr = _Buddy_get_byte_addr (map_buddy, byte);
+
+      uint8_t byte_order = _Buddy_get_byte_order (map_buddy, byte);
+//          print("b0: "); print(itoa(byte_order,16)); print("\n");
+
+      uint8_t bit_order = align_up (byte_order, 3) - 3;
+//      print("bit_order: "); print(itoa(bit_order,16)); print("\n");
+
+	uint8_t bit_limit;
+	if(byte == 0)
+		bit_limit = _Buddy_get_childbits(map_buddy->order);
+	else
+		bit_limit = 8;
+      for (uint8_t bit = 0; bit < bit_limit; bit++)
+	{
+	  uint64_t bit_addr = byte_addr + (bit * ORDERVALUES[bit_order]);
+
+	  if (bit_addr >= KERNEL_START) {
+	          print("ba: "); print(itoa(byte_addr,16));// print("\n");
+	          print(" bia: "); print(itoa(bit_addr,16)); print("\n");
+	  }
+
+	  if (bit_addr <= KERNEL_START) {
+		  print("b4 - ba: "); print(itoa(byte_addr,16));// print("\n");
+		  print(" bia: "); print(itoa(bit_addr,16)); print("\n");
+	  }
+
+
+	}
+    }
+
+
+  print ("END\n");
+}
+
+
+uint8_t
+_get_order (uint64_t sz)
+{
+  uint8_t order = MAX_ORDER;
+  while (order--)
+    {
+      if (ORDERVALUES[order] <= sz)
+	break;
+    }
+  return order;
+}
+
+
+#endif

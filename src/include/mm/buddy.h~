@@ -1,0 +1,46 @@
+#ifndef __INCLUDE_MM_BUDDY_H__
+#define __INCLUDE_MM_BUDDY_H__ 1
+
+
+#include "../debug.h"		// nop()
+#include "../stdint.h"		// uint64_t
+#include "../stdlib.h"		// itoa()
+#include "../math.h"		// align_up(), align_down()
+#include "../vt.h"		// print()
+
+#include "../../arch/x86_64/mm.h"	// PAGE_SZ
+#include "../../arch/x86_64/vmem.h"	// VIRT2PHYS()
+
+#define MAX_ORDER 15
+
+#define BUDDY_OBJS_MAX_SZ 1024
+
+#define BUDDY_EMPTY	0
+#define BUDDY_PARTIAL	1
+#define BUDDY_FULL	2
+
+struct Buddy
+{
+  uint64_t addr;
+  uint8_t order;
+//      uint8_t status;
+//      struct Buddy * left;
+//      struct Buddy * right;
+//      struct Buddy * parent;
+
+  uint8_t bitmap[];
+};
+
+
+void Buddy_fill_ORDERVALUES (void);
+void Buddy_get_map_sz (uint64_t * map_sz, uint64_t addr, uint64_t sz);
+void Buddy_create_tree (uint64_t * map_ptr, uint64_t addr, uint64_t sz);
+void Buddy_init (struct Buddy *self, uint64_t addr, uint8_t order);
+void Buddy_reserve_tree (uint64_t * map_ptr, uint64_t map_sz);
+
+void _Buddy_push (struct Buddy *self);
+uint8_t _get_order (uint64_t sz);
+
+uint8_t _Buddy_get_childbits (uint8_t order);
+
+#endif

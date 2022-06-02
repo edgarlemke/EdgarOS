@@ -1,0 +1,183 @@
+﻿General Statement
+
+EdgarOS aims to be a general-purpose UNIX-like operating system based on an exokernel.
+
+Base Technology
+
+* written in AT&T-syntax assembly and C
+* GNU assembler and GNU gcc for compiler
+* x86_64 and AARCH64 support
+* Multiboot2 bootloader for x86_64, bootloader for AARCH64?
+* QEMU is the default emulator for tests
+
+Design goals
+
+* exokernel design
+* pluggable physical memory manager, virtual memory manager, scheduler - choice
+at compile time
+* monolithic/microkernel debate is pushed into libOSes
+* "There should be one-- and preferably only one --obvious way to do it."
+* recognize trade-offs, avoid forcing them upper-stack, aim to increase trade-off coverage area, let the user decide trade-offs
+
+
+Structure
+
+Boot
+
+The boot directory contain files related to the boot process. Currently only Multiboot2 on x86_64 is working. Files related to Multiboot2 are located in the boot/multiboot2 directory.
+boot/multiboot2/header.asm file contains the Multiboot2 header.
+boot/multiboot2/boot.asm file basically just saves the Multiboot2 magic number and Multiboot2 info pointer and setups long mode.
+boot/multiboot2/boot.c file serves as a C adapter and finally calls kmain(), the main kernel C function.
+boot/multiboot2/multiboot2.c file serves utilities for when using Multiboot2 in C space.
+
+Boot of the os.iso file proceeds from GRUB2 reading the Multiboot2 header, starting the code in boot/multiboot2/boot.asm, which calls boot() in boot/multiboot2/boot.c, which calls kmain() in arch/x86_64/kernel.c.
+
+Long mode is enabled in boot/multiboot2/boot.asm. To do this, it must:
+* check for paging in CR0.PG and disable it if it's enabled
+* have page tables set up, since long mode requires paging and virtual memory
+* setup CR4.PAE and CR4.PGE
+* setup CR3 with the Page Map Level 4 Table pointer. Currently PML5 is not supported.
+* setup EFER.LME, LME = Long Mode Enable
+* enable paging in CR0.PG
+* setup a GDT suitable for long mode
+* far jump to the 64-bits-landing-label
+
+The 64 bits landing label, namely _start64, must:
+* setup segment registers
+* setup a IDT suitable for long mode
+[* enable interrupts? ]
+* call boot()
+
+
+Initialization
+
+Initialization is what happens past the assembly boot file/C adapter, into kmain(). This step serves to start hardware and afterwards, software services.
+
+boot_data object must be publicly available to processes and threads.
+
+
+Physical Memory Manager
+
+The Physical Memory Manager is responsible for keeping track of physical memory
+allocations.
+
+It uses a buddy-like algorithm for storing and retrieving page frames. It starts allocating pages of the following sizes: 4KB, 8KB, 16KB, 32KB, 64KB, 128KB, 256KB, 512KB. Every buddy is a bitmap stripe representing contiguous physical memory, aligned to the page size. Every byte in the bitmap maps 1020KB of contiguous memory. Every bit in the map representes whether a page frame was allocated or is reserved, and every bit also informs the page frame size, being bit 0 = 4KB … bit 7 = 512KB. When a bit of smaller size is marked as allocated or reserved, all bits of greater size are also marked. Bits of greater size are only freed when all bits of smaller size are freed. Every page frame size has a corresponding pointer to the next available page, which is updated on allocating and freeing operations.
+
+Trade-Offs:
+* increased memory allocated for memory mapping itself – every byte in bitmap maps 1020KB of memory.
+* allocating and freeing should be faster than algorithms which need iteration over bitmap
+* decreased fragmentation, therefore increased power saving on RAM
+
+Following the principle of exposing the hardware, the kernel should expose the hardware or interface it uses to obtain its memory info. For the x86_64 architecture, this means Multiboot2 info pointer for now, and it’s exposed in the boot_data object.
+
+The kernel should also expose the following info about memory, in a public object: available pages, free pages, used pages, ACPI memory, bad memory, kernel used pages, actually phy_malloc’ated bytes.
+
+struct PhyMemData {
+  uint32_t page_size;
+  uint64_t available_pages;
+  uint64_t free_pages;
+  uint64_t kernel_pages;
+  uint64_t user_pages;
+  uint64_t allocated_bytes;
+  struct PhyMemSlice * meta;
+};
+
+struct PhyMemSlice {
+  uint8_t type;
+  uint64_t addr;
+  uint64_t size;
+};
+
+The PMM must provide the following functions:
+
+/* For initializing PMM from boot_data */
+void phy_mem_init ( boot_data_t boot_data );
+/* Must:
+ * take Multiboot2 info ptr from boot_data
+ * take mmap tag from Multiboot2 info ptr
+ * find out memory map size from mmap tag entries
+ * pre-allocate memory map after KERNEL_END
+ * fill memory map and structs from mmap tag entries
+*/
+
+/* For allocating physical memory */
+uint64_t * phy_malloc ( uint64_t * size );
+
+/* For freeing previously allocated physical memory */
+void phy_free ( uint64_t * addr );
+
+
+Issues:
+
+* which algo? slab? buddy? my own simple algo? Check out trade-offs, main use – decision: buddy-like
+
+* how expose hardware? Which info expose? Total available memory, free memory, used memory, ACPI memory, bad memory, kernel memory
+
+* distributed/more-than-one PMMs? Having more than one pmm running at same time requires all know which blocks are used, therefore they must sync this inf, therefore the registries tend to be redundant on system which cache other’s pmms info – decision: only one main PMM
+* common interface for different PMMs?
+
+* different flux for small blocks? vmem blocks will always be at least 4kb on x86_64 – decision: no, blocks smaller than 4KB will be handled upper-stack, probably by the VMM.
+
+
+Virtual Memory Manager
+
+* interface
+
+vmem_alloc kmalloc
+vmem_free kfree
+vmem_realloc krealloc
+
+create_page_table
+setup_page_table
+set_cr3
+
+* probably should skip swapping to disk for now
+
+
+Scheduler
+
+* which algo?
+
+* distributed/more-than-one sched? DITTO
+* common interface for different scheds?
+
+* interface
+* tickless kernel
+
+
+Interrupts and IRQs
+
+* APIC controller
+
+
+Clocks
+
+* HPET
+
+
+Drivers
+
+* main virtualized drivers are first-shot on phase zero
+* on phase one seek most common used drivers, libos-linux-driver, libos-netbsd-rump
+
+
+Filesystems
+
+* FAT32 first shot?
+* VFS?
+
+
+Toolchain
+
+* gcc
+* toolchain setup script
+
+
+Naming Conventions and Code Style
+
+* PHY functions convention?
+
+
+Standard Library
+
+* safe pointers?

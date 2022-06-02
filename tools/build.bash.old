@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# extra dependencies on Debian 10:
+# lzip
+# gcc-i686-linux-gnu
+# ninja
+# pkg-config
+# libglib2.0 libglib2.0-dev
+# libpixman-1.0 libpixman-1-dev
+
+export TARGET="i686-elf"
+
+export PREFIX="$(pwd)/cross-$TARGET"
+export PATH="$PREFIX/bin:$PATH"
+
+export BUILD_GMP="$PREFIX/build-gmp"
+export BUILD_MPFR="$PREFIX/build-mpfr"
+export BUILD_MPC="$PREFIX/build-mpc"
+export BUILD_BINUTILS="$PREFIX/build-binutils"
+export BUILD_GCC="$PREFIX/build-gcc"
+
+
+mkdir -p "$PREFIX"
+mkdir -p "$PREFIX/bin"
+
+build_gmp(){
+mkdir "$BUILD_GMP"
+cd "$BUILD_GMP"
+
+../../gmp/configure --prefix="$PREFIX"
+make
+make check
+make install
+}
+
+build_mpfr(){
+mkdir -p "$BUILD_MPFR"
+cd "$BUILD_MPFR"
+
+../../mpfr/configure --prefix="$PREFIX" --with-gmp-include="$PREFIX/include/" --with-gmp-lib="$PREFIX/lib/" #--with-gmp-build="$BUILD_GMP"
+make
+make check
+make install
+}
+
+build_mpc(){
+mkdir -p "$BUILD_MPC"
+cd "$BUILD_MPC"
+
+../../mpc/configure --prefix="$PREFIX" --with-gmp-include="$PREFIX/include/" --with-gmp-lib="$PREFIX/lib/"
+make
+make check
+make install
+}
+
+build_binutils(){
+mkdir -p "$BUILD_BINUTILS"
+cd "$BUILD_BINUTILS"
+
+../../binutils/configure --target="$TARGET" --prefix="$PREFIX" --with-sysroot --disable-nls --disable-werror
+make
+make install
+}
+
+build_gcc(){
+mkdir -p "$BUILD_GCC"
+cd "$BUILD_GCC"
+
+../../gcc/configure --target="$TARGET" --prefix="$PREFIX" --disable-nls --enable-languages=c --without-headers --with-gmp-include="$PREFIX/include/" --with-gmp-lib="$PREFIX/lib/" --with-mpfr-include="$PREFIX/include" --with-gmp-lib="$PREFIX/lib/"
+make all-gcc
+make all-target-libgcc
+make install-gcc
+make install-target-libgcc
+}
+
+build_gmp
+build_mpfr
+build_mpc
+build_binutils
+build_gcc
